@@ -95,16 +95,16 @@ impl Device for Bus<'_> {
     }
 }
 
-struct Rom {
+struct Ram {
     data: [u8; 1024],
 }
 
-impl Rom {
+impl Ram {
     const BASE_ADDRESS: u64 = 0x10000;
     const SIZE: u64 = 0x10000;
 }
 
-impl Device for Rom {
+impl Device for Ram {
     fn read(&self, ptr: u64, buf: &mut [u8], len: u64) -> Result<()> {
         buf.copy_from_slice(&self.data[ptr as usize..ptr as usize + len as usize]);
         Ok(())
@@ -120,13 +120,13 @@ fn main() {
     let mut bus = Bus {
         devices: BTreeMap::new(),
     };
-    let rom = Box::new(Rom { data: [0; 1024] });
+    let ram = Box::new(Ram { data: [0; 1024] });
 
-    bus.register(rom, Rom::BASE_ADDRESS, Rom::SIZE);
-    bus.write(Rom::BASE_ADDRESS + 1, &[1, 2, 3], 3).unwrap();
+    bus.register(ram, Ram::BASE_ADDRESS, Ram::SIZE);
+    bus.write(Ram::BASE_ADDRESS + 1, &[1, 2, 3], 3).unwrap();
 
     let mut buf = [0; 3];
-    bus.read(Rom::BASE_ADDRESS + 1, &mut buf, 3).unwrap();
+    bus.read(Ram::BASE_ADDRESS + 1, &mut buf, 3).unwrap();
 
     println!("{:?}", buf);
 }
