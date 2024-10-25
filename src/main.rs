@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    fs,
+};
 
 #[derive(Debug)]
 enum Error {
@@ -7,7 +11,7 @@ enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct MemoryRange {
     base_address: u64,
     size: u64,
@@ -39,31 +43,18 @@ impl MemoryRange {
     }
 }
 
-trait Device {
-    fn read(&self, ptr: u64, buf: &mut [u8], len: u64) -> Result<()>;
-    fn write(&mut self, ptr: u64, buf: &[u8], len: u64) -> Result<()>;
+trait Device: Debug {
+    fn read(&mut self, ptr: u64, buf: &mut [u8]) -> Result<()>;
+    fn write(&mut self, ptr: u64, buf: &[u8]) -> Result<()>;
 }
 
+#[derive(Debug)]
 struct Bus<'b> {
     devices: BTreeMap<MemoryRange, Box<dyn Device + 'b>>,
 }
 
 impl<'b> Bus<'b> {
-    fn get_device(&self, addr: u64) -> Result<(&MemoryRange, &dyn Device)> {
-        self.devices
-            .range(
-                ..=MemoryRange {
-                    base_address: addr,
-                    ..Default::default()
-                },
-            )
-            .rev()
-            .find(|(range, _)| range.contains(addr)) // should be first
-            .map(|(r, device)| (r, &**device))
-            .ok_or(Error::InvalidAccess)
-    }
-
-    fn get_device_mut(&mut self, addr: u64) -> Result<(&MemoryRange, &mut (dyn Device + 'b))> {
+    fn get_device(&mut self, addr: u64) -> Result<(&MemoryRange, &mut (dyn Device + 'b))> {
         self.devices
             .range_mut(
                 ..=MemoryRange {
@@ -84,34 +75,51 @@ impl<'b> Bus<'b> {
 }
 
 impl Device for Bus<'_> {
-    fn read(&self, ptr: u64, buf: &mut [u8], len: u64) -> Result<()> {
-        let device = self.get_device(ptr)?;
-        device.1.read(ptr - device.0.base_address, buf, len)
+    fn read(&mut self, ptr: u64, buf: &mut [u8]) -> Result<()> {
+        let (memory_range, device) = self.get_device(ptr)?;
+        device.read(ptr - memory_range.base_address, buf)
     }
 
-    fn write(&mut self, ptr: u64, buf: &[u8], len: u64) -> Result<()> {
-        let device = self.get_device_mut(ptr)?;
-        device.1.write(ptr - device.0.base_address, buf, len)
+    fn write(&mut self, ptr: u64, buf: &[u8]) -> Result<()> {
+        let (memory_range, device) = self.get_device(ptr)?;
+        device.write(ptr - memory_range.base_address, buf)
     }
 }
 
+#[derive(Default, Debug)]
 struct Ram {
-    data: [u8; 1024],
+    // Vec size: 4096
+    sparse_memory_map: HashMap<u64, Vec<u8>>,
 }
 
 impl Ram {
-    const BASE_ADDRESS: u64 = 0x10000;
-    const SIZE: u64 = 0x10000;
+    const PAGE_SIZE: u64 = 0x1000;
+    const PAGE_OFFSET_BITS: u64 = 12; // log(PAGE_SIZE)
+}
+
+impl Ram {
+    fn page_slice(&mut self, ptr: u64, len: u64) -> &mut [u8] {
+        let (page_id, page_offset) = (
+            ptr >> Self::PAGE_OFFSET_BITS,
+            ptr & (1 << Self::PAGE_OFFSET_BITS - 1),
+        );
+
+        &mut self
+            .sparse_memory_map
+            .entry(page_id)
+            .or_insert(vec![0; Self::PAGE_SIZE as usize])
+            [page_offset as usize..page_offset as usize + len as usize]
+    }
 }
 
 impl Device for Ram {
-    fn read(&self, ptr: u64, buf: &mut [u8], len: u64) -> Result<()> {
-        buf.copy_from_slice(&self.data[ptr as usize..ptr as usize + len as usize]);
+    fn read(&mut self, ptr: u64, buf: &mut [u8]) -> Result<()> {
+        buf.copy_from_slice(&self.page_slice(ptr, buf.len() as u64));
         Ok(())
     }
 
-    fn write(&mut self, ptr: u64, buf: &[u8], len: u64) -> Result<()> {
-        self.data[ptr as usize..ptr as usize + len as usize].copy_from_slice(&buf);
+    fn write(&mut self, ptr: u64, buf: &[u8]) -> Result<()> {
+        self.page_slice(ptr, buf.len() as u64).copy_from_slice(&buf);
         Ok(())
     }
 }
@@ -120,13 +128,24 @@ fn main() {
     let mut bus = Bus {
         devices: BTreeMap::new(),
     };
-    let ram = Box::new(Ram { data: [0; 1024] });
 
-    bus.register(ram, Ram::BASE_ADDRESS, Ram::SIZE);
-    bus.write(Ram::BASE_ADDRESS + 1, &[1, 2, 3], 3).unwrap();
+    let dtb = fs::read("tests/chipyard_example.dtb").unwrap();
+    let fdt = fdt::Fdt::new(&dtb).unwrap();
+
+    for node in fdt.find_all_nodes("/memory") {
+        let reg = node.reg().unwrap().next().unwrap();
+        bus.register(
+            Box::new(Ram::default()),
+            reg.starting_address as u64,
+            reg.size.unwrap() as u64,
+        );
+    }
+
+    bus.write(0x8000000, &[1, 2, 3]).unwrap();
 
     let mut buf = [0; 3];
-    bus.read(Ram::BASE_ADDRESS + 1, &mut buf, 3).unwrap();
+    bus.read(0x8000000, &mut buf).unwrap();
 
-    println!("{:?}", buf);
+    bus.write(0x80000005, &[1, 2, 3]).unwrap();
+    println!("{:?}", bus);
 }
