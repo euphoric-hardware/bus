@@ -7,10 +7,30 @@ enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Default)]
 struct MemoryRange {
     base_address: u64,
     size: u64,
+}
+
+impl PartialEq for MemoryRange {
+    fn eq(&self, other: &Self) -> bool {
+        self.base_address.eq(&other.base_address)
+    }
+}
+
+impl Eq for MemoryRange {}
+
+impl PartialOrd for MemoryRange {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.base_address.partial_cmp(&other.base_address)
+    }
+}
+
+impl Ord for MemoryRange {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.base_address.cmp(&other.base_address)
+    }
 }
 
 impl MemoryRange {
